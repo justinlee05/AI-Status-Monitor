@@ -44,16 +44,16 @@ jobs:
           # GitHub Actions output (간단한 형식)
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
-      - name: Update bot display name and status
+      - name: Update bot status
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
         run: |
           set -euo pipefail
           
-          # Slack 토큰 확인
-          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-            echo "ERROR: SLACK_BOT_TOKEN is not set!"
-            echo "Please add SLACK_BOT_TOKEN to repository secrets."
+          # Slack 사용자 토큰 확인 (봇 상태 변경용)
+          if [ -z "${SLACK_USER_TOKEN:-}" ]; then
+            echo "ERROR: SLACK_USER_TOKEN is not set!"
+            echo "Need user token (xoxp-) to update bot status"
             exit 1
           fi
           
@@ -61,84 +61,77 @@ jobs:
           CURRENT_STATUS="${{ steps.fetch.outputs.status }}"
           echo "Current status: '$CURRENT_STATUS'"
           
-          # 상태에 따른 봇 이름과 이모지 설정
+          # 상태에 따른 봇 상태 설정
           case "$CURRENT_STATUS" in
             operational) 
-              BOT_NAME="AI Monitor 🟢"
               STATUS_EMOJI=":white_check_mark:"
               STATUS_TEXT="OpenAI 정상 작동 중"
               ;;
             degraded_performance) 
-              BOT_NAME="AI Monitor 🟡"
               STATUS_EMOJI=":warning:"
               STATUS_TEXT="OpenAI 성능 저하"
               ;;
             partial_outage|major_outage) 
-              BOT_NAME="AI Monitor 🔴"
               STATUS_EMOJI=":x:"
               STATUS_TEXT="OpenAI 장애 발생"
               ;;
             *) 
-              BOT_NAME="AI Monitor ⚠️"
               STATUS_EMOJI=":question:"
               STATUS_TEXT="OpenAI 상태 불명 ($CURRENT_STATUS)"
               ;;
           esac
           
           echo "=== DEBUG INFO ==="
-          echo "Bot Name: $BOT_NAME"
           echo "Status: $CURRENT_STATUS"
           echo "Status Text: $STATUS_TEXT"
           echo "Status Emoji: $STATUS_EMOJI"
-          echo "Token present: $([ -n "${SLACK_BOT_TOKEN:-}" ] && echo "YES" || echo "NO")"
-          echo "Token length: ${#SLACK_BOT_TOKEN}"
           echo "=================="
           
-          # JSON 페이로드 생성 (특수문자 안전 처리)
-          DISPLAY_NAME_PAYLOAD=$(jq -n --arg name "$BOT_NAME" '{profile: {display_name: $name}}')
-          STATUS_PAYLOAD=$(jq -n --arg emoji "$STATUS_EMOJI" --arg text "$STATUS_TEXT" '{profile: {status_emoji: $emoji, status_text: $text}}')
-          
-          # 먼저 봇 정보 확인
-          echo "Testing Slack API connection..."
-          AUTH_TEST=$(curl -sS \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+          # 먼저 봇의 사용자 ID 가져오기
+          echo "Getting bot user info..."
+          BOT_INFO=$(curl -sS \
+            -H "Authorization: Bearer ${SLACK_USER_TOKEN}" \
             "https://slack.com/api/auth.test")
           
-          echo "Auth test response: $AUTH_TEST"
+          echo "Bot info: $BOT_INFO"
           
-          if echo "$AUTH_TEST" | jq -e '.ok == false' > /dev/null; then
-            echo "ERROR: Slack authentication failed"
-            echo "$AUTH_TEST" | jq -r '.error // "Unknown error"'
+          if echo "$BOT_INFO" | jq -e '.ok == false' > /dev/null; then
+            echo "ERROR: Failed to get bot info"
+            echo "$BOT_INFO" | jq -r '.error // "Unknown error"'
             exit 1
           fi
           
-          # 봇의 display name 업데이트
-          echo "Updating display name..."
-          RESPONSE1=$(curl -sS -X POST \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-type: application/json; charset=utf-8" \
-            --data "$DISPLAY_NAME_PAYLOAD" \
-            "https://slack.com/api/users.profile.set")
-          
-          echo "Display name response: $RESPONSE1"
+          BOT_USER_ID=$(echo "$BOT_INFO" | jq -r '.user_id')
+          echo "Bot User ID: $BOT_USER_ID"
           
           # 봇의 상태 메시지 업데이트
-          echo "Updating status message..."
-          RESPONSE2=$(curl -sS -X POST \
-            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+          echo "Updating bot status..."
+          STATUS_PAYLOAD=$(jq -n \
+            --arg user "$BOT_USER_ID" \
+            --arg emoji "$STATUS_EMOJI" \
+            --arg text "$STATUS_TEXT" \
+            '{
+              user: $user,
+              profile: {
+                status_emoji: $emoji,
+                status_text: $text
+              }
+            }')
+          
+          RESPONSE=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${SLACK_USER_TOKEN}" \
             -H "Content-type: application/json; charset=utf-8" \
             --data "$STATUS_PAYLOAD" \
             "https://slack.com/api/users.profile.set")
           
-          echo "Status message response: $RESPONSE2"
+          echo "Response: $RESPONSE"
           
           # 에러 체크
-          if echo "$RESPONSE1" | jq -e '.ok == false' > /dev/null; then
-            echo "ERROR: Display name update failed"
-            echo "$RESPONSE1" | jq -r '.error // "Unknown error"'
-          fi
-          
-          if echo "$RESPONSE2" | jq -e '.ok == false' > /dev/null; then
-            echo "ERROR: Status message update failed"
-            echo "$RESPONSE2" | jq -r '.error // "Unknown error"'
+          if echo "$RESPONSE" | jq -e '.ok == false' > /dev/null; then
+            echo "ERROR: Bot status update failed"
+            echo "$RESPONSE" | jq -r '.error // "Unknown error"'
+            exit 1
+          else
+            echo "✅ Bot status updated successfully!"
+            echo "Status: $STATUS_EMOJI $STATUS_TEXT"
           fi
