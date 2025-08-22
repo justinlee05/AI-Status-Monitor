@@ -36,20 +36,26 @@ jobs:
             esac
           fi
           
-          echo "Found status: $STATUS"
+          # 상태 정리 (첫 번째 줄만 사용)
+          STATUS=$(echo "$STATUS" | head -n1 | tr -d '\n\r')
           
-          # GitHub Actions output format (multiline safe)
-          {
-            echo "status<<EOF"
-            echo "$STATUS"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "Found status: '$STATUS'"
+          
+          # GitHub Actions output (간단한 형식)
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
       - name: Update bot display name and status
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         run: |
           set -euo pipefail
+          
+          # Slack 토큰 확인
+          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+            echo "ERROR: SLACK_BOT_TOKEN is not set!"
+            echo "Please add SLACK_BOT_TOKEN to repository secrets."
+            exit 1
+          fi
           
           # 현재 상태 가져오기
           CURRENT_STATUS="${{ steps.fetch.outputs.status }}"
@@ -84,11 +90,27 @@ jobs:
           echo "Status: $CURRENT_STATUS"
           echo "Status Text: $STATUS_TEXT"
           echo "Status Emoji: $STATUS_EMOJI"
+          echo "Token present: $([ -n "${SLACK_BOT_TOKEN:-}" ] && echo "YES" || echo "NO")"
+          echo "Token length: ${#SLACK_BOT_TOKEN}"
           echo "=================="
           
           # JSON 페이로드 생성 (특수문자 안전 처리)
           DISPLAY_NAME_PAYLOAD=$(jq -n --arg name "$BOT_NAME" '{profile: {display_name: $name}}')
           STATUS_PAYLOAD=$(jq -n --arg emoji "$STATUS_EMOJI" --arg text "$STATUS_TEXT" '{profile: {status_emoji: $emoji, status_text: $text}}')
+          
+          # 먼저 봇 정보 확인
+          echo "Testing Slack API connection..."
+          AUTH_TEST=$(curl -sS \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            "https://slack.com/api/auth.test")
+          
+          echo "Auth test response: $AUTH_TEST"
+          
+          if echo "$AUTH_TEST" | jq -e '.ok == false' > /dev/null; then
+            echo "ERROR: Slack authentication failed"
+            echo "$AUTH_TEST" | jq -r '.error // "Unknown error"'
+            exit 1
+          fi
           
           # 봇의 display name 업데이트
           echo "Updating display name..."
