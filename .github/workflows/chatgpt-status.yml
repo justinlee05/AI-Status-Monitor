@@ -16,18 +16,27 @@ jobs:
       - name: Ensure jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch OpenAI Status (ChatGPT component)
+      - name: Fetch OpenAI Status (Chat component)
         id: fetch
         run: |
           set -euo pipefail
           URL="https://status.openai.com/api/v2/summary.json"
           JSON="$(curl -fsSL "$URL")"
-          # ChatGPT 컴포넌트 상태만 추출(없으면 빈 문자열)
-          STATUS="$(echo "$JSON" | jq -r '.components[] | select(.name|test("ChatGPT";"i")) | .status' || true)"
+          
+          # Chat 컴포넌트 상태 추출 (ChatGPT 대신 Chat 사용)
+          STATUS="$(echo "$JSON" | jq -r '.components[] | select(.name|test("Chat";"i")) | .status' || true)"
           if [ -z "$STATUS" ] || [ "$STATUS" = "null" ]; then
-            # 컴포넌트 명이 변할 가능성에 대비: API 전체 지표(보수적 Yellow) 사용
-            STATUS="unknown"
+            # Chat 컴포넌트를 찾을 수 없으면 전체 상태 사용
+            OVERALL_STATUS="$(echo "$JSON" | jq -r '.status.indicator' || true)"
+            case "$OVERALL_STATUS" in
+              "none") STATUS="operational" ;;
+              "minor") STATUS="degraded_performance" ;;
+              "major") STATUS="major_outage" ;;
+              *) STATUS="unknown" ;;
+            esac
           fi
+          
+          echo "Found status: $STATUS"
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
       - name: Update bot display name and status
@@ -60,22 +69,40 @@ jobs:
               ;;
           esac
           
+          echo "=== DEBUG INFO ==="
           echo "Bot Name: $BOT_NAME"
           echo "Status: ${{ steps.fetch.outputs.status }}"
           echo "Status Text: $STATUS_TEXT"
+          echo "Status Emoji: $STATUS_EMOJI"
+          echo "=================="
           
-          # 봇의 display name 업데이트 (users.profile.set 사용)
-          curl -sS -X POST \
+          # 봇의 display name 업데이트
+          echo "Updating display name..."
+          RESPONSE1=$(curl -sS -X POST \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-type: application/json; charset=utf-8" \
             --data "{\"profile\":{\"display_name\":\"${BOT_NAME}\"}}" \
-            "https://slack.com/api/users.profile.set" \
-          | jq -r '.'
+            "https://slack.com/api/users.profile.set")
+          
+          echo "Display name response: $RESPONSE1"
           
           # 봇의 상태 메시지 업데이트
-          curl -sS -X POST \
+          echo "Updating status message..."
+          RESPONSE2=$(curl -sS -X POST \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-type: application/json; charset=utf-8" \
             --data "{\"profile\":{\"status_emoji\":\"${STATUS_EMOJI}\",\"status_text\":\"${STATUS_TEXT}\"}}" \
-            "https://slack.com/api/users.profile.set" \
-          | jq -r '.'
+            "https://slack.com/api/users.profile.set")
+          
+          echo "Status message response: $RESPONSE2"
+          
+          # 에러 체크
+          if echo "$RESPONSE1" | jq -e '.ok == false' > /dev/null; then
+            echo "ERROR: Display name update failed"
+            echo "$RESPONSE1" | jq -r '.error // "Unknown error"'
+          fi
+          
+          if echo "$RESPONSE2" | jq -e '.ok == false' > /dev/null; then
+            echo "ERROR: Status message update failed"
+            echo "$RESPONSE2" | jq -r '.error // "Unknown error"'
+          fi
