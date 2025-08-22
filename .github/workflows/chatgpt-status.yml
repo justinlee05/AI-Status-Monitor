@@ -37,7 +37,13 @@ jobs:
           fi
           
           echo "Found status: $STATUS"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          
+          # GitHub Actions output format (multiline safe)
+          {
+            echo "status<<EOF"
+            echo "$STATUS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update bot display name and status
         env:
@@ -45,8 +51,12 @@ jobs:
         run: |
           set -euo pipefail
           
+          # 현재 상태 가져오기
+          CURRENT_STATUS="${{ steps.fetch.outputs.status }}"
+          echo "Current status: '$CURRENT_STATUS'"
+          
           # 상태에 따른 봇 이름과 이모지 설정
-          case "${{ steps.fetch.outputs.status }}" in
+          case "$CURRENT_STATUS" in
             operational) 
               BOT_NAME="AI Monitor 🟢"
               STATUS_EMOJI=":white_check_mark:"
@@ -65,23 +75,27 @@ jobs:
             *) 
               BOT_NAME="AI Monitor ⚠️"
               STATUS_EMOJI=":question:"
-              STATUS_TEXT="OpenAI 상태 불명"
+              STATUS_TEXT="OpenAI 상태 불명 ($CURRENT_STATUS)"
               ;;
           esac
           
           echo "=== DEBUG INFO ==="
           echo "Bot Name: $BOT_NAME"
-          echo "Status: ${{ steps.fetch.outputs.status }}"
+          echo "Status: $CURRENT_STATUS"
           echo "Status Text: $STATUS_TEXT"
           echo "Status Emoji: $STATUS_EMOJI"
           echo "=================="
+          
+          # JSON 페이로드 생성 (특수문자 안전 처리)
+          DISPLAY_NAME_PAYLOAD=$(jq -n --arg name "$BOT_NAME" '{profile: {display_name: $name}}')
+          STATUS_PAYLOAD=$(jq -n --arg emoji "$STATUS_EMOJI" --arg text "$STATUS_TEXT" '{profile: {status_emoji: $emoji, status_text: $text}}')
           
           # 봇의 display name 업데이트
           echo "Updating display name..."
           RESPONSE1=$(curl -sS -X POST \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-type: application/json; charset=utf-8" \
-            --data "{\"profile\":{\"display_name\":\"${BOT_NAME}\"}}" \
+            --data "$DISPLAY_NAME_PAYLOAD" \
             "https://slack.com/api/users.profile.set")
           
           echo "Display name response: $RESPONSE1"
@@ -91,7 +105,7 @@ jobs:
           RESPONSE2=$(curl -sS -X POST \
             -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
             -H "Content-type: application/json; charset=utf-8" \
-            --data "{\"profile\":{\"status_emoji\":\"${STATUS_EMOJI}\",\"status_text\":\"${STATUS_TEXT}\"}}" \
+            --data "$STATUS_PAYLOAD" \
             "https://slack.com/api/users.profile.set")
           
           echo "Status message response: $RESPONSE2"
