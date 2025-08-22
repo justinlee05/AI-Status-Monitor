@@ -1,4 +1,4 @@
-name: ChatGPT Status to Slack Icon
+name: AI Status Monitor - Bot Status Update
 
 on:
   schedule:
@@ -9,7 +9,7 @@ jobs:
   poll-and-update:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (icons only)
+      - name: Checkout
         uses: actions/checkout@v4
 
         # jq 설치 (ubuntu-latest에 기본 탑재되어 있지만 보수적으로 설치)
@@ -30,44 +30,52 @@ jobs:
           fi
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
-      - name: Decide icon color
-        id: color
-        run: |
-          set -euo pipefail
-          case "${{ steps.fetch.outputs.status }}" in
-            operational) COLOR="green" ;;
-            degraded_performance) COLOR="yellow" ;;
-            partial_outage|major_outage) COLOR="red" ;;
-            *) COLOR="yellow" ;;  # unknown/maintenance 등은 경고색으로
-          esac
-          echo "color=$COLOR" >> "$GITHUB_OUTPUT"
-
-      - name: Set Slack profile photo (users.setPhoto)
+      - name: Update bot display name and status
         env:
-          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         run: |
           set -euo pipefail
-          ICON="icons/${{ steps.color.outputs.color }}.png"
-          if [ ! -f "$ICON" ]; then
-            echo "Icon not found: $ICON" >&2
-            exit 1
-          fi
-          # Slack Web API: users.setPhoto (multipart)
-          curl -sS -F "image=@${ICON}" \
-               -H "Authorization: Bearer ${SLACK_USER_TOKEN}" \
-               https://slack.com/api/users.setPhoto \
-            | jq -r '.'
-
-      # 선택: 상태 변경시 채널 알림 (봇 토큰 필요)
-      # - name: Notify channel
-      #   if: always()
-      #   env:
-      #     SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      #   run: |
-      #     CHANNEL="#ai-status"  # 채널 ID나 이름
-      #     TEXT="ChatGPT 상태 아이콘 갱신: ${{ steps.color.outputs.color == 'green' && '🟢 정상' || steps.color.outputs.color == 'yellow' && '🟡 경미 이슈/미확인' || '🔴 장애' }}"
-      #     curl -sS -X POST "https://slack.com/api/chat.postMessage" \
-      #       -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-      #       -H "Content-type: application/json; charset=utf-8" \
-      #       --data "{\"channel\":\"${CHANNEL}\",\"text\":\"${TEXT}\"}" \
-      #     | jq -r '.'
+          
+          # 상태에 따른 봇 이름과 이모지 설정
+          case "${{ steps.fetch.outputs.status }}" in
+            operational) 
+              BOT_NAME="AI Monitor 🟢"
+              STATUS_EMOJI=":white_check_mark:"
+              STATUS_TEXT="OpenAI 정상 작동 중"
+              ;;
+            degraded_performance) 
+              BOT_NAME="AI Monitor 🟡"
+              STATUS_EMOJI=":warning:"
+              STATUS_TEXT="OpenAI 성능 저하"
+              ;;
+            partial_outage|major_outage) 
+              BOT_NAME="AI Monitor 🔴"
+              STATUS_EMOJI=":x:"
+              STATUS_TEXT="OpenAI 장애 발생"
+              ;;
+            *) 
+              BOT_NAME="AI Monitor ⚠️"
+              STATUS_EMOJI=":question:"
+              STATUS_TEXT="OpenAI 상태 불명"
+              ;;
+          esac
+          
+          echo "Bot Name: $BOT_NAME"
+          echo "Status: ${{ steps.fetch.outputs.status }}"
+          echo "Status Text: $STATUS_TEXT"
+          
+          # 봇의 display name 업데이트 (users.profile.set 사용)
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-type: application/json; charset=utf-8" \
+            --data "{\"profile\":{\"display_name\":\"${BOT_NAME}\"}}" \
+            "https://slack.com/api/users.profile.set" \
+          | jq -r '.'
+          
+          # 봇의 상태 메시지 업데이트
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-type: application/json; charset=utf-8" \
+            --data "{\"profile\":{\"status_emoji\":\"${STATUS_EMOJI}\",\"status_text\":\"${STATUS_TEXT}\"}}" \
+            "https://slack.com/api/users.profile.set" \
+          | jq -r '.'
